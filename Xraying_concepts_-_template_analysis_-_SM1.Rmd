@@ -1,0 +1,1405 @@
+---
+title: "Psychometric analyses 6-steps protocol"
+subtitle: "Example Rmd script"
+author: "Author: [name removed for blinded review]; September 2017"
+date: " `r Sys.Date()`"
+output: 
+    html_document: 
+    highlight: textmate
+    theme: flatly
+    toc: TRUE
+    tables: TRUE
+---
+
+#Summary 
+
+This document presents the results of a psychometric analysis of [describe item set]
+
+**Step 1** performs basic descriptive statistics at item level. 
+
+**Step 2** examines item properties according to item response theory (IRT) requirements; non-parametric (Mokken Scaling Analysis; MSA), and parametric (Rasch or Rating Scale Model).
+
+**Step 3** examines the structure of the item set according to factor analysis (exploratory and confirmatory). 
+
+**Step 4** examines scale reliability and item properties for unidimensional item sets according to Classical Test Theory. 
+
+**Step 5** searches for respondent clusters via cluster analyses. 
+
+Finally, **step 6** computes total scores and score statistics for each unidimensional item set, and displays distributions as histograms. 
+
+
+```{r setup, warning=FALSE, message=FALSE, echo=FALSE}
+# this is a section of R script that prepares the analysis; it imports and uploads some libraries which will be used later on, and defines some useful settings and functions.
+# here you may want to add some more advanced functions later on
+# there is no need to modify anything for a basic analysis
+
+# install and upload the relevant libraries ####
+
+for (n in c('foreign', 'utils', 'relimp', 'ggplot2', 'ggdendro', 
+            'dplyr', 'tidyr', 'reshape2', 'tibble', 'captioner',
+           'psych', 'memisc', 'Hmisc', 'ltm', 
+           'lavaan','semTools','semPlot', 'qgraph','sem',
+           'mirt', 'eRm', 'mokken', 'rgl','scales',
+           'CTT','MBESS','cluster', 'knitr', 'bookdown'))
+{
+  if(!require(n,character.only=TRUE)){install.packages(n)}
+  library(n,character.only=TRUE)
+}
+
+#  brief info on the uses of these libraries:
+#  for importing data: 'foreign'
+#  for data viewing, writing: 'utils', 'relimp'
+#  for plotting: 'ggplot2', 'ggdendro'
+#  for data management: 'dplyr', 'tidyr', 'reshape2', 'tibble', 
+#  for descriptives and various psychometric analyses: 'psych', 'memisc', 'Hmisc',
+#  for latent trait models, incl calpha, factor scores, IRT: 'ltm', 'lavaan','semTools','semPlot','qgraph','sem',
+#  for parametric IRT analysis: 'mirt', 'eRm'
+#  for Mokken scale analysis (nonparametric IRT): 'mokken'
+#  for plotting:'rgl','scales',
+#  for classical test theory: 'CTT','MBESS'
+#  for cluster analyses: 'cluster'
+#  for reporting documents: 'knitr', 'bookdown'
+
+                # ^^^^^ check out other psychometrics packages at: http://cran.r-project.org/web/views/Psychometrics.html
+                # if you want to install them all, use the code below (installs cran task views package, 
+                # then uses install.views to get all updated packages in Psychometrics):
+                # install.packages("ctv")
+                # library(ctv)
+                # install.views("Psychometrics")
+
+
+# add hooks for diplaying interactive 3d plots 
+
+knitr::knit_hooks$set(rgl = function(before, options, envir) {
+  if (!before) {
+    ## after a chunk has been evaluated
+    if (rgl.cur() == 0) return()  # no active device
+    name = paste(options$fig.path, options$label, sep = '')
+    rgl.snapshot(paste(name, '.png', sep = ''), fmt = 'png')
+    return(paste('\\includegraphics{', name, '}\n', sep = ''))
+  }
+})
+# simple
+knitr::knit_hooks$set(webgl = hook_webgl)
+
+# add captioning for figures and tables (as here: https://www.r-bloggers.com/r-markdown-how-to-number-and-reference-tables/)
+
+table_nums <- captioner::captioner(prefix = "Table")
+figure_nums <- captioner::captioner(prefix = "Figure")
+t.ref <- function(x) {
+  stringr::str_extract(table_nums(x), "[^:]*")
+}
+f.ref <- function(x) {
+  stringr::str_extract(figure_nums(x), "[^:]*")
+}
+
+# add functions needed in analyses
+
+# defines a function to partition an item set into mokken scales - lowerbound from .05 to .80 
+moscales.for.lowerbounds <- function( x, lowerbounds=seq(from=0.05,to=0.80,by=0.05) )
+{
+  ret.value <- NULL;
+  for( lowerbound in lowerbounds )
+  {
+    tmp <- aisp( x,  lowerbound=lowerbound );
+    if( is.null(ret.value) )
+    {
+      ret.value <- data.frame( "Item"=rownames(tmp), "Scales."=tmp[,1] );
+    }
+    else
+    {
+      ret.value <- cbind( ret.value, "Scales."=tmp[,1] );
+    }
+    names(ret.value)[ncol(ret.value)] <- sprintf("%.2f",lowerbound);
+  }
+  rownames(ret.value) <- NULL;
+  ret.value;
+}
+
+# creates a table with the agglomeration schedule for hierarchical cluster analysis - distance coefficients for last 10 steps
+aggl.sch <- function(hc)
+{
+  data.frame(row.names = paste (seq(length(hc$height),1),"Cluster(s)"),
+             height = hc$height,
+             components = ifelse(hc$merge<0, abs(hc$merge), paste ("Cluster",hc$merge)),
+             stringsAsFactors = FALSE)
+}
+```
+
+```{r dataset, warning=FALSE, message=FALSE, echo=FALSE}
+# this is a section of R script for importing data from other formats and checking it to make sure you imported the right one
+# you can modify depending on the format and name of your dataset
+                # Here are examples of how you can import data from csv, excel and SPSS
+                ### from csv:
+                # mydata <- read.table(file="./mydata.csv", 
+                #                      header=TRUE, # first row contains variable names 
+                #                      sep=",",   # comma is separator 
+                #                      na.strings="999", # if you have specific numbers for missing data, if not, comment this line out
+                #                      row.names="id") # assign the variable id to row names
+                ## OR use file.choose() to select your dataset manually via a window interface
+                ### from excel:
+                # library(xlsx) 
+                # mydata <- read.xlsx("c:/myexcel.xlsx", 1) # read in the first worksheet from the workbook myexcel.xlsx, first row contains variable names (default)
+                # OR
+                # mydata <- read.xlsx("c:/myexcel.xlsx", sheetName = "mysheet") # read in the worksheet named mysheet
+                ### from SPSS:
+                # ***** first save SPSS dataset in portable format
+                # SPSS syntax:
+                # get file='c:\mydata.sav'.
+                # export outfile='c:\mydata.por'. 
+                # then in R, import your file (function in Hmisc package)
+                # mydata <- spss.get("c:/mydata.por", use.value.labels=TRUE) # last option converts value labels to R factors
+                ### In the psych package, there is also an option to copy paste the data from clipboard
+                # mydata <- read.clipboard() 
+                #### more on importing data from sas, stata or systat: http://www.statmethods.net/input/importingdata.html
+
+
+### import data files with an .RData format (e.g. exported at the end of data preparation in a prior R script) ####
+
+for( s in c("preparedDataSet", 
+            "otherpreparedDataSet" ))     
+{
+  load(paste0(s,".RData"));
+}
+
+# give the name 'mydata' to the dataset you want to work with (this name will be used for all analyses below)
+# for example, if the item set you want to study is the first 30 variables of the preparedDataSet, the code would be:
+mydata <- preparedDataSet[1:30]
+
+# check data 
+# View(mydata)
+# OR
+# headTail(mydata)
+# check sample size
+# nrow(mydata)
+# check variable names
+# names(mydata)
+
+# if needed, change variable names:
+names(mydata) <- c("Item1","Item2","Item3","Item4","Item5","Item6","Item7","Item8","Item9","Item10","Item11","Item12",
+                   "Item13","Item14","Item15","Item16","Item17","Item18","Item19","Item20","Item21","Item22","Item23",
+                   "Item24","Item25","Item26","Item27","Item28","Item29","Item30")
+
+                      # use variable names that are meaningful for you (instead of "Item1",...) and make sure you rename all variables and follow the column order!
+                      # to change a single variable name, use:
+                      # names(mydata)[names(mydata) == "Item7"] <- "mymeaningfulnamehere"
+
+# define subscales - if you already have a hypothesis about which items belong to which subscales
+# for example, if your 30-item scale includes 3 subscales with 10 items each recorded in this order in the dataset, the code would be:
+Subscale1 <- names(mydata)[1:10]
+Subscale2 <- names(mydata)[11:20]
+Subscale3 <- names(mydata)[21:30]
+# define a vector with all your items for easy selection later on
+myitems <- names(mydata)
+
+
+```
+
+Sample size: `r nrow(mydata)`.
+
+# Step 1: Descriptives
+
+Response frequencies and item statistics are examined to assess whether items show sufficient variation to be able to differentiate respondents on the construct(s) investigated, and if there are any out-of-range values (data entry errors). Differences in response frequencies also provide a first hint regarding variation in item intensity/difficulty (and help interpret any later differences between Step 2 and Step 3 results). Associations between items are examined to identify any negative correlations (and reverse code such items for next analyses). Plotting of multivariate outliers helps identify any respondents with idiosyncratic response patterns, which can be further investigated and either excluded (e.g. if errors are identified in the data collection/entry) or kept within the sample (if there are no valid reasons for exclusion).
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE, message=FALSE}
+
+# run frequencies for all items
+for( n in myitems)
+{
+  cat( "\n", n, ":" );
+  print( table( mydata[,n], exclude=NULL ) );
+}
+
+# check if the variables are coded as numeric
+class(mydata[,1])
+
+# compute new variables ordinal numeric & 'missing' as NA
+                ## if required, recode the missing label (e.g. "Missing value") as NA
+                # for( n in myitems)
+                # {
+                #   mydata[ mydata[,n] == "Missing value",  n ] <- NA;
+                # }
+            
+                # for example, define as numeric from 0 to 6 some items that were labeled as character, from 1 to 7:
+                # for( n in myitems)
+                # {
+                #   mydata[,n] <- as.numeric(mydata[,n])-1
+                # }
+
+                # or if your items are yes/no variables with missings and "don't know" answers:
+                # for( n in myitems)
+                # {
+                #   n1 <- paste(n,"YN",sep=""); # this adds a YN at the end of the new variable name, to avoid overwriting the dataset
+                #   mydata[ , n1 ] <- NA;
+                #   mydata[ mydata[,n] == "yes", n1 ] <- 1;
+                #   mydata[ mydata[,n] == "no",  n1 ] <- 0;
+                #   mydata[ mydata[,n] == "I don't know",  n1 ] <- 0;
+                #   mydata[ mydata[,n] == "Missing value",  n1 ] <- 0;
+                #   cat( "\n", n1, ":" );
+                #   print( table( mydata[,n1], exclude=NULL ) );
+                # }
+                # myitems <- names(mydata)[30:60]
+                # mydata <- mydata[,myitems]
+
+# check if variables look the same after modifications
+for( n in myitems)
+{
+  cat( "\n", n, ":" );
+  print( table( mydata[,n], exclude=NULL ) );
+}
+# check if the transformation to numeric worked
+class(mydata[,1])
+
+                # if required, use this code to select only cases without missing values on specific columns
+                # names(mydata)
+                # mydata.full <- mydata[complete.cases(mydata[1:10]),]
+
+#_______________________#
+####   THE 6 STEPS   ####
+#_______________________#
+
+#__________________#
+####   STEP 1   ####
+#__________________#
+
+# define captions
+Tab_1.1_cap <- table_nums(name="tab_1.1", caption = "Frequencies of item response options" )
+Tab_1.2_cap <- table_nums(name="tab_1.2", caption = "Descriptive statistics of all items" )
+
+Fig_1.1_cap <- figure_nums(name="fig_1.1", caption = "Barplots of high score frequencies" )
+Fig_1.2_cap <- figure_nums(name="fig_1.2", caption = "Barplots of item score distributions" )
+Fig_1.3_cap <- figure_nums(name="fig_1.3", caption = "Heatplot Spearman correlations between item scores" )
+Fig_1.4_cap <- figure_nums(name="fig_1.4", caption = "Multivariate outliers in item set" )
+```
+
+## Results
+
+The frequencies of endorsing individual response options are presented in `r t.ref("tab_1.1")`, and barplots of item score distributions are shown in `r f.ref("fig_1.1") ` and `r f.ref("fig_1.2")`.
+
+Descriptive statistics (mean, standard deviation, range, etc.) are presented in `r t.ref("tab_1.2")`.
+
+A heat plot of inter-item correlations (Spearman) is shown in `r f.ref("fig_1.3")`.
+
+Multivariate outliers in the item set (Mahalanobis distance - D^2^ values) are displayed graphically in `r f.ref("fig_1.4")`.
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE, message=FALSE}
+# frequencies table - here example for ordinal items with 7-point Likert response scales
+# build a table with item distributions
+# 1. build an empty txt file
+summaries.file <- "./summaries.txt";
+cat( "Variable\tNegative\t1\t2\tNeural\t4\t5\tPositive\tNegativeto3\t4toPositive\tmissing\n", file=summaries.file, append=FALSE );
+# 2. write a function to include values for an item
+write.summary.var <- function( x, xname )
+{
+  a1 <- sum( x == 0, na.rm=TRUE );
+  a2 <- sum( x == 1, na.rm=TRUE );
+  a3 <- sum( x == 2, na.rm=TRUE );
+  a4 <- sum( x == 3, na.rm=TRUE );
+  a5 <- sum( x == 4, na.rm=TRUE );
+  a6 <- sum( x == 5, na.rm=TRUE );
+  a7 <- sum( x == 6, na.rm=TRUE );
+  a8 <- round((sum( x <=3, na.rm=TRUE )*100/nrow(mydata)), 2);
+  a9 <- round((sum( x >3, na.rm=TRUE )*100/nrow(mydata)), 2);
+  a10 <-sum(is.na(x));
+  cat( paste( xname, "\t", a1, "\t", a2, "\t", a3, "\t", a4, "\t", a5, "\t", a6, "\t", a7, "\t", a8, "\t", a9, "\t", a10, "\n", sep="" ), file=summaries.file, append=TRUE );
+}
+# 3. for each item, run this function iteratively
+for( n in myitems)
+{
+  write.summary.var( mydata[,n], n );
+}
+# and read the table in R
+myitemssum = read.table( file="./summaries.txt", header = TRUE, sep = "\t", quote="\"" )
+# 4. add column names
+colnames(myitemssum) <- c("Item label","Negative", "1","2","N","4","5", "Positive", "% 0 to 3", "% 4 to 6", "No. missing")
+# 5. view
+# View(myitemssum)
+
+                # if you want to add item content, modify the quotes below with specific item content
+                # Item <- c("Item1","Item2","Item3","Item4","Item5","Item6","Item7","Item8","Item9","Item10","Item11","Item12",
+                #           "Item13","Item14","Item15","Item16","Item17","Item18","Item19","Item20","Item21","Item22","Item23",
+                #           "Item24","Item25","Item26","Item27","Item28","Item29","Item30")
+                # myitemssum <- cbind(Item, myitemssum)
+                # # view
+                # View(myitemssum)
+# order items based on percentage
+myitemssumOrder <- myitemssum[order(myitemssum[,10]),] # based on the 10th column (% high scores)
+                # Note: myitemssum[order(-myitemssum[,10]),] would do it in descending order
+# view
+View(myitemssumOrder)
+# if you need it outside the output file
+write.table(myitemssumOrder, file="./myitemssumOrder.csv", quote = FALSE, sep = "\t",row.names = FALSE)
+
+
+# descriptives ordinal items
+# describe treats all variables as numeric, so use it only for ordinal to ratio when properly coded
+descrmyitems <- as.data.frame( round( psych::describe( mydata ), 2 ))
+# View(descrmyitems)
+# if you need it outside the output file
+write.table(descrmyitems, file="./descrmyitems.csv", quote = FALSE, sep = "\t",row.names = FALSE)
+
+
+```
+
+```{r , results = 'asis', echo=FALSE}
+knitr::kable(myitemssumOrder, caption = Tab_1.1_cap)
+```
+
+```{r , results = 'asis', echo=FALSE}
+knitr::kable(descrmyitems[,c(3,4,8,9,11,12,13)] , caption = Tab_1.2_cap)
+```
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, message=FALSE, echo=FALSE, fig.cap=Fig_1.1_cap}
+# plots to visualize the data ####
+
+# barplot of endorsement frequencies (number of respondents with high scores)
+barplot(myitemssumOrder[,"% 4 to 6"], 
+        main = "High score frequencies for items",
+        xlab="Items", 
+        ylab="Number of respondents", 
+        cex.lab=0.8,
+        cex.axis=0.8,
+        names.arg=myitemssumOrder[, "Item label"], 
+        las=2, 
+        cex.names=0.6)
+```
+
+```{r, fig.width=6*2, fig.height=5*2, warning=FALSE, message=FALSE, echo=FALSE, fig.cap=Fig_1.2_cap}
+
+# barplots for items - here example for ordinal 7-point Likert
+                # if you want to print as pdf, use the code below and modify as needed
+                # pdf( "./myitemplots.pdf", width=6*2, height=5*2, paper="special" ); 
+# jpeg( "./myitemplots.jpg", width=6*2, height=5*2, units="in", quality = 90, res=150 ); 
+par( mfrow=c(5,6)); # set several plots per rows and columns
+for( n in myitems)
+{
+  distr <- table(mydata[,n])
+  barplot(distr,  
+          main=n, 
+          col=gray.colors(20), 
+          ylab = "Number of respondents", 
+          xlab = "Response (1=Negative, 7=Positive)");
+};
+# dev.off();
+```
+
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, message=FALSE, echo=FALSE, fig.cap=Fig_1.3_cap}
+# prepare corelation matrix
+# for binary items, use tetrachoric correlation matrix
+# bluesqs <- as.data.frame(tetrachoric(mydata)["rho"]);
+# for ordinal items use Spearman correlations
+bluesqs <- cor(mydata, method = "spearman");
+# heat plot of correlations matrix 
+# uncomment the png & devoff lines if you want to save as png in the working directory
+# png('corplot.png')
+cor.plot(bluesqs, numbers=TRUE, main="correlations between items", 
+         cex=0.5, cex.axis=0.7)
+# dev.off()
+
+# if required, recode items that were worded in the opposite way
+# mydata[,1] <- 8-mydata[,1] # where 1 is the number of the column with the variable that needs recoding
+# # repeat the plot and comment the previous one if you want to display this one
+# cor.plot(cor(mydata, method = "spearman"),numbers=TRUE,main="correlations between items", 
+#          cex=0.5, cex.axis=0.7)
+
+
+ # if required, exclude from next analyses items that have no/little variance 
+ # (e.g. <5% in one category for binary variables, less than 5% in 2 adjacent response options for ordinal variables)
+ # mydata <- subset( mydata, select = -namevar)
+ # check what you have left
+ # names(mydata)
+
+```
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE, echo=FALSE, fig.cap=Fig_1.4_cap}
+ 
+# check outliers in item sets
+d2mydata <- outlier(mydata, cex=.6, bad=3, ylim=c(0,130))
+# hist(d2mydata)
+
+# possible to exclude by case number, for example case 1 (a first test participant shows up as outlier)
+# mydata <- mydata[-1,]
+
+# outliers are <.001 according to Tabachnick, B.G., & Fidell, L.S. (2007). Using Multivariate Statistics (5th Ed.). Boston: Pearson. (p. 74) 
+# explained here for SPSS: http://www-01.ibm.com/support/docview.wss?uid=swg21480128
+
+```
+
+There were `r sum((1-pchisq(d2mydata, ncol(mydata)))<.001)` respondents with D^2^ values with probability values <.001 (considering a chi-squared distribution with df = the number of items). The maximum D^2^ value is `r round(max(d2mydata), 2)`. 
+
+## Interpretation
+
+- Are there any out-of-range values?
+- Are all response options well-represented in the data?
+- Are all associations between items positive?
+- Are there multivariate outliers in the data?
+
+# Step 2a: Item properties - Mokken Scaling Analysis (MSA)
+
+Idiosyncratic response patterns are examined within MSA as number of Guttman errors and displayed graphically. Coefficients of homogeneity (H) are examined for the original item set (for each item, item pair, and the overall scale) Values >=.30 indicate scalability. 
+
+An Automated Item Selection Procedure (*aisp*) is performed at increasing threshold levels of homogeneity (c) to examine dimensionality. If all items show up as belonging to dimension number 1, this means that the scale is unidimensional at that threshold of homogeneity (indicated in column headings, from .05 to .80). The minimum threshold for homogeneity is .30. Items with a value of 0 are unscalable at that threshold. If at higher threshold levels item separate from dimension number 1 in groups (e.g. 2 or more items 'leave' dimension 1 at the same threshold) this indicates that those items may represent a separate dimension. If, on the contrary, items 'leave' the dimension one by one and become unscalable, this indicates that there is a single dimension with which items are more or less strongly associated. Unidimensional item subsets are selected based on the *aisp* algorithm (the items selected should show unidimensionality at a threshold level of .30 or higher) and theoretical considerations. 
+
+These item subsets are then tested for local independence, monotonicity, and invariant item ordering - 3 criteria for model fit in MSA. 
+
+- Local independence is reported as TRUE/FALSE values; if all values are TRUE, the items show local independence with default parameters; if any of the items show up as FALSE, more investigation is needed. 
+
+- Monotonicity is shown in table format (default minsize). The 'zsig' column shows the number of statistically-significant violations of monotonicity per item; if this number is >0 for one or more items, more investigation of monotonicity is needed (for more testing, various minsize values can be specified in separate tests). Monotonicity is also displayed visually by item step response functions (ISRF; minsize values can be modified to provide a sufficient number of rest score groups for adequate testing).
+
+- invariant item ordering test are shown first in table format (default minsize). The 'tsig' column shows the number of statistically-significant violations of IIO per item; if any of the items do not show 0 in the #tsig column, more investigation of IIO is needed  (for more testing, various minsize values can be specified in separate tests). IIO is also displayed visually by ISRF plots for each item pair (as above, minsize values can be modified to provide a sufficient number of rest score groups for adequate testing).
+
+For item sets that fit these criteria, it can be concluded that items measure the same construct and total scores can be used to locate respondents on the unidimensional continuum that represent the construct.
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+#__________________#
+####   STEP 2   ####
+#__________________#
+
+# the mokken and eRm packages - IRT analyses
+
+                # ^^^^^^ before you start, check these as guide docs:
+                # Non-parametric IRT: https://www.jstatsoft.org/article/view/v020i11 
+                # Parametric IRT: https://www.jstatsoft.org/article/view/v020i09
+
+# NIRT ####
+# examine item set structure with minimum assumptions
+
+# define captions
+Tab_2.1_cap <- table_nums(name="tab_2.1", caption = "MSA: Homogeneity values (and standard errors) for items" )
+Tab_2.2_cap <- table_nums(name="tab_2.2", caption = "MSA: *aisp* for increasing H thresholds (c)")
+
+Fig_2.1_cap <- table_nums(name="fig_2.1", caption = "MSA: Guttman errors for all item set" )
+```
+
+## Results
+
+The distribution of Guttman errors is shown in `r f.ref("fig_2.1")`. 
+
+The homogeneity values of all items in the initial item set are showm in `r t.ref("tab_2.1")`.
+
+To test unidimensionality, the results of an automated item selection procedure (*aisp*) with all items are shown in `r t.ref("tab_2.2")`. 
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE, echo=FALSE, fig.cap=Fig_2.1_cap}
+# Outliers
+xPlus   <- rowSums(mydata)
+gPlus   <- check.errors(mydata)$Gplus
+hist(gPlus)
+oPlus   <- check.errors(mydata, TRUE, TRUE)$Oplus
+# cor(cbind(oPlus, gPlus, xPlus))
+
+Q3 <- summary(gPlus)[[5]]
+IQR <- Q3 - summary(gPlus)[[2]]
+outlier <- gPlus > Q3 + 1.5 * IQR 
+# if needed to further analyse ouliers
+# cbind(mydata, gPlus)[outlier,]
+# then possible sensitivity analysis:
+# coefH(mydata[!outlier,])
+```
+
+There were `r sum(outlier)` cases with a number of Guttman errors higher than (Q3 plus 1.5 times IQR). 
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+# Compute scalability coefficients
+Hvalues <- coefH(mydata)
+# examine aisp for increasing c levels (run the function you defined above and give it a name)
+motable.mydata <- moscales.for.lowerbounds( mydata )
+# save it as a data frame
+aispmydata <- as.data.frame(motable.mydata)
+# if you need to view it
+# View(aispmydata)
+# if you need it outside the output file
+# write.table(motable.mydata, file="./aispmydata.csv", quote = FALSE, sep = "\t",row.names = FALSE)
+```
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(Hvalues$Hi, caption = Tab_2.1_cap)
+```
+
+The complete item set has a homogeneity value H(se) = `r Hvalues$H`.  
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(motable.mydata, caption = Tab_2.2_cap)
+```
+
+A selection of the items to investigate further (one scale or more subscales) can be performed by selecting a solution from the table above, or by selecting specific items in connection with theoretical considerations; most importantly, the items selected should show unidimensionality at a threshold level of .30 or higher. 
+
+**Interpretation**
+
+[include here interpretation and decision for analyses below, e.g. investigate the 3 subscales separately].
+
+### Subscale 1: 
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+
+Tab_2.3a_cap <- table_nums(name="tab_2.3a", caption = "MSA: Subcale 1: item homogeneity values")
+Tab_2.4a_cap <- table_nums(name="tab_2.4a", caption = "MSA: Subcale 1: monotonicity with default minsize")
+Tab_2.5a_cap <- table_nums(name="tab_2.5a", caption = "MSA: Subcale 1: IIO with default minsize")
+
+Fig_2.2a_cap <- figure_nums(name="fig_2.2a", caption = "MSA: Subcale 1: ISRF with minsize=50" )
+Fig_2.3a_cap <- figure_nums(name="fig_2.3a", caption = "MSA: Subcale 1: IIO with minsize=50" )
+
+# select the most appropriate solution, for example code below is for the solution at lowerbound .30
+# myselection <- aisp(mydata,  lowerbound=.3)
+# myselection
+# check which items are in which subscales (here the first subscale)
+# names(mydata[,myselection==1])
+
+
+# check properties for subscales:
+# select the first subscale (if MSA confirms the initial 3-subscale structure)
+mysubscale1 <- mydata[,Subscale1]
+# check H 
+HvaluesSubscale1 <- coefH(mysubscale1)
+```
+
+The **homogeneity** values of all items in Subscale 1 are showm in `r t.ref("tab_2.3a")`.
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(HvaluesSubscale1$Hi, caption = Tab_2.3a_cap)
+```
+
+Subscale 1 has a homogeneity value H(se) = `r HvaluesSubscale1$H`.  
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE, message=FALSE}
+# check conditional association (local independence)
+CA.def.mysubscale1 <- check.ca(mysubscale1, TRUE)
+CA.def.mysubscale1$InScale
+CA.def.mysubscale1$Index
+CA.def.mysubscale1$Flagged
+```
+
+**Local independence** for the subscale 1 items is presented below as TRUE/FALSE values: 
+
+`r CA.def.mysubscale1$InScale[[1]]`
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+# check monotonicity at different minsize:
+# with default minsize:
+monotonicity.def.mysubscale1 <- check.monotonicity(mysubscale1, minvi = .03)
+```
+
+**Monotonicity** tests are shown in `r t.ref("tab_2.4a")` for default minsize (alternative values of 60 and 50 are displayed below as R output). Item step response functions (minsize=50) are displayed visually in `r f.ref("fig_2.2a")`
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(summary(monotonicity.def.mysubscale1), caption = Tab_2.4a_cap)
+```
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+# try different minsizes 60 to 10 
+monotonicity.60.mysubscale1 <- check.monotonicity(mysubscale1, minvi = .03, minsize = 60)
+summary(monotonicity.60.mysubscale1)
+#plot(monotonicity.60.mysubscale1)
+monotonicity.50.mysubscale1<- check.monotonicity(mysubscale1, minvi = .03, minsize = 50)
+summary(monotonicity.50.mysubscale1)
+#plot(monotonicity.50.mysubscale1)
+```
+
+```{r, fig.width=5*2, fig.height=2*2, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_2.2a_cap }
+# plot ISRFs in a pdf
+#pdf( "./ISRFs-mydata1.pdf", width=5*2, height=2*2, paper="special" );
+par( mfrow=c(2,5));
+plot(monotonicity.50.mysubscale1, curves="ISRF", ask=FALSE, color.ci="yellow")
+#dev.off();
+```
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+# Investigate the assumption of non-intersecting item step response functions (ISRFs) 
+# using method MIIO (appropriate for ordinal items)
+miio.mysubscale1 <- check.iio(mysubscale1)
+# or using rest score (for binary items)
+# restscore.mysubscale1 <- check.restscore(mysubscale1)
+# several other options are available in mokken: pmatrix, mscpm, and IT
+```
+
+**Invariant item ordering (IIO)** tests are shown in `r t.ref("tab_2.5a")` for default minsize (alternative values of 60 and 50 are displayed below as R output). Intersection plots for tem step response functions (minsize=50) are displayed visually in `r f.ref("fig_2.3a")`
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(summary(miio.mysubscale1)$item.summary, caption = Tab_2.5a_cap)
+```
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+# Investigate the assumption of non-intersecting item step response functions (ISRFs) at different minsize values
+miio.60.mysubscale1 <- check.iio(mysubscale1, minsize = 60)
+summary(miio.60.mysubscale1)
+miio.50.mysubscale1 <- check.iio(mysubscale1, minsize = 50)
+summary(miio.50.mysubscale1)
+```
+
+```{r, fig.width=5*2, fig.height=6*2, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_2.3a_cap }
+par( mfrow=c(6,5));
+plot(miio.50.mysubscale1)
+```
+
+**Note**: the analysis can be repeated for the other subscales.
+
+## Interpretation
+
+- Are there idiosyncratic response patterns? (and if yes, do they influence results?)
+- Are all items scalable at H >= .30?
+- Is the item set unidimensional or are there indications of multidimensionality?
+
+For each subscale:
+
+- Are all items scalable at H >= .30?
+- Do all items show local independence?
+- Do all items show monotonicity?
+- Do all items show invariant item ordering?
+
+# Step 2b: Item properties - parametric Item Response Theory models (Rasch Model or Rating Scale Model)
+
+The parametric IRT models includes in this step - the Rasch Model for binary items and Rating Scale Model for ordinal items - follow the same principles with MSA in that they require the probability functions of items in a unidimensional scale to be monotonously increasing, locally independent, and non-intersecting. In contrast to MSA, which tests these properties given an ordinal-level latent, RM and RSM test whether items fit the criteria for additive conjoint measurement, which in essence means that item scores can be added up (or averaged) to a total score that can represent quantitative differences between respondents. 
+
+The following diagnostics are reported:
+
+* Item fit (infit and outfit). Criteria for item fit are considered as within the mean squares range of 0.6-1.4 and standardized fit statistics of +/−2.0.  If outfit and infit are within these values, they can be considered adequate for measuring the latent construct on an interval-level. 
+
+* Global model fit and item-pair and item-triplet residuals (significant results indicate differences between the data and the model, therefore bad fit)
+
+* Item Characteristic Curves are plotted in a joint plot and in separate plots.
+
+* The hierarchy of item difficulty and the match between person ability and item difficulty (scale targeting) are explored graphically via Person-Item map and Pathway map. 
+
+* Person reliability (adequate values >.85) and person separation (>2.5) are computed.
+
+* Person fit is evaluated based on the same criteria with item fit (mean squares range of 0.6-1.4 and standardized fit statistics of +/−2.0) and number (and percentages) of misfitting persons are reported based on outfit and infit. (and compared to a criterion of <5 percent)
+
+* the Andersen likelihood ration (LR) test is performed for assessing subgroup homogeneity for high and low scores based on median cut-off.
+
+If (most of) the items in a (sub)scale fit these criteria, it can be concluded that items measure the same construct and total scores can be used to locate respondents on the unidimensional continuum that represent the construct. If fit is not achieved, alternative IRT models may need to be explored to explain the data, or prior MSA results may apply (considering the latent construct at ordinal level).
+
+## Results
+
+```{r , warning=FALSE, echo=FALSE, message=FALSE}
+# PIRT ####
+# examine PIRT model fit for the unidimensional scales identified via NIRT 
+
+# for binary items - Rasch model
+fit1.Subscale1 <- RM(mydata[,Subscale1])
+
+# for ordinal items - Rating Scale model (if all items have the same format, e.g. all are on 5-point scales from strongly agree to strongly disagree)
+fit1.Subscale1 <- RSM(mydata[,Subscale1] #, constrained = FALSE, Hessian=TRUE
+                   )
+
+          # # Note: Partial Credit model (if items have different formats, e.g. some are 3-point scales, some 5-point scales)
+          # fit2.Subscale1 <- PCM(mydata[,Subscale1] #, constrained = FALSE, Hessian=TRUE
+          # )
+
+# model fit and plotting - same code for binary and ordinal
+
+Tab_2b.1a_cap <- table_nums(name="tab_2b.1a", caption = "R(S)M: Subcale 1: Summary item fit")
+
+Fig_2b.1a_cap <- figure_nums(name="fig_2b.1a", caption = "R(S)M: Subcale 1: Item Characteristic Curves - single plot" )
+Fig_2b.2a_cap <- figure_nums(name="fig_2b.2a", caption = "R(S)M: Subcale 1: Item Characteristic Curves - separate plots" )
+Fig_2b.3a_cap <- figure_nums(name="fig_2b.3a", caption = "R(S)M: Subcale 1: Person-Item Map" )
+Fig_2b.4a_cap <- figure_nums(name="fig_2b.4a", caption = "R(S)M: Subcale 1: Pathway Map" )
+Fig_2b.5a_cap <- figure_nums(name="fig_2b.5a", caption = "R(S)M: Subcale 1: Item difficulty for high and low latent score groups" )
+Fig_2b.6a_cap <- figure_nums(name="fig_2b.6a", caption = "R(S)M: Subcale 1: Item parameter confidence intervals based on LR test" )
+
+```
+
+**Model fit**, and item-pair and item-triplet residuals for testing **local dependencies** are summarized as output text below.
+
+```{r , warning=FALSE, echo=FALSE, message=FALSE}
+
+# summary(fit1.Subscale1)
+
+ppr <- person.parameter(fit1.Subscale1)
+
+# goodness of fit indices
+gofIRT(ppr)
+
+# information criteria
+IC(ppr)
+
+# item-pair residuals for testing local dependencies:
+# fit model with lrm package (eRm does not include these tests)
+# for binary items: Rasch model
+fit1.ltm.Subscale1 <- rasch(mydata[,Subscale1], constraint = cbind(length(mydata[,Subscale1]) + 1, 1))
+# for ordinal items: 1-parameter GRM (the RSM model is not (yet) implemented in ltm)
+fit1.ltm.Subscale1 <- grm(preparedDataSet[,4:14], constrained =TRUE)
+# model summary (item coefficients are item difficulties with standard errors and standardized z values)
+summary(fit1.ltm.Subscale1)
+# check model fit ( GoF should be ns)
+GoF.rasch(fit1.ltm.Subscale1, B = 199)
+# residuals item pairs ( chisq residuals < 3.5 is good - rule of thumb)
+margins(fit1.ltm.Subscale1)
+# residuals item triplets
+margins(fit1.ltm.Subscale1, type = "three-way", nprint = 2) # prints triplets of items with the highest residual values for each response pattern
+
+```
+
+Item characteristic curves are displayed visually in `r f.ref("fig_2b.1a")`, and separately in `r f.ref("fig_2b.2a")`. 
+
+The distribution of person latent scores and location of item difficulties on the latent (person-item map) are displayed in `r f.ref("fig_2b.3a")`. Item difficulty and infit statistics are shown in `r f.ref("fig_2b.4a")`
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_2b.1a_cap }
+# plot all ICCs in a single graph
+# plot ICCs in a pdf
+# pdf( "./ICCs-mydata1.pdf", width=10, height=10, paper="special" );
+par( mfrow=c(1,1));
+plotjointICC(fit1.Subscale1, main="Item Characteristic Curves",ylab="Probability", legend=FALSE)
+# dev.off();
+```
+
+
+```{r, fig.width=5*2, fig.height=2*2, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_2b.2a_cap }
+# plot ISRFs in a pdf
+#pdf( "./ICCs-sep-mydata1.pdf", width=5*2, height=2*2, paper="special" );
+# plot Item Characteristic Curves separately
+par(mfrow = c(5, 2))
+plotICC(fit1.Subscale1, legpos=FALSE)
+#dev.off();
+```
+
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_2b.3a_cap }
+# plot in a pdf
+#pdf( "./PImap-mydata1.pdf", width=10, height=10, paper="special" );
+# plot person-item map (distribution of person latent scores and location of item difficulties on the latent)
+par(mfrow = c(1, 1)) # sets plots to 1 per graph
+plotPImap(fit1.Subscale1, sorted=TRUE)
+#dev.off();
+```
+
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_2b.4a_cap }
+# plot in a pdf
+#pdf( "./PW-mydata1.pdf", width=10, height=10, paper="special" );
+# plot item difficulty & infit statistics (items should be within the green borders)
+plotPWmap(fit1.Subscale1)
+#dev.off();
+```
+
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+# separation reliability (proportion of item variance not due to error - similar to C-alpha)
+
+```
+
+**Separation reliability** for Subscale 1 is `r round(as.numeric(SepRel(ppr))[1], 2)`, and **person separation** is `r round(sqrt(SepRel(ppr)$sep.rel/(1-SepRel(ppr)$sep.rel)), 2) `.
+
+```{r , warning=FALSE, echo=FALSE, message=FALSE}
+
+# item fit (between 0.6 and 1.4 acc to Wright BD, Linacre JM. Reasonable mean-square fit values. Rasch Meas Trans. 1994;8(2):370.)
+itemfit.mysubscale <- itemfit(ppr)
+# names(print(itemfit.mysubscale$i.fit))
+ItemsFitTbl <- as.data.frame(print(itemfit.mysubscale))
+
+```
+
+**Item fit** is shown in `r t.ref("tab_2b.2a")`. 
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(ItemsFitTbl, caption = Tab_2b.2a_cap)
+```
+
+
+```{r , warning=FALSE, echo=FALSE, message=FALSE}
+# Personfit (z values should be </= 1.96)
+personfit.mysubscale <- personfit(ppr)
+PersonFitTBL <- as.data.frame(print(personfit.mysubscale))
+# misfitting persons
+misoutfits<- nrow(PersonFitTBL[(PersonFitTBL$p.outfitZ > 1.96 | PersonFitTBL$p.outfitZ < -1.96)  
+                  & (PersonFitTBL$p.outfitMSQ < 0.6| PersonFitTBL$p.outfitMSQ > 1.4 ), ])
+misinfits <- nrow(PersonFitTBL[(PersonFitTBL$p.infitZ > 1.96 | PersonFitTBL$p.infitZ < -1.96)  
+                  & (PersonFitTBL$p.infitMSQ < 0.6| PersonFitTBL$p.infitMSQ > 1.4 ), ])
+
+# subgroup invariance test (median split) based on Andersen's liekelihood ratio test (should be ns)
+# default splitcr="median", but can also be a separate variable that specified group membership, e.g. gender, 2 disease conditions, etc
+# other test available in the function NPtest
+lrres <- LRtest(fit1.Subscale1, splitcr = "median")
+lrres
+
+```
+
+Item outfit values ranged between `r round(min(itemfit.mysubscale$i.outfitMSQ), 2)` and `r round(max(itemfit.mysubscale$i.outfitMSQ), 2)`. Item infit values ranged between `r round(min(itemfit.mysubscale$i.infitMSQ), 2)` and `r round(max(itemfit.mysubscale$i.infitMSQ), 2)`. 
+
+There were `r misoutfits` persons with misfit according to outfit values (representing `r round(misoutfits*100/nrow(PersonFitTBL), 2) ` percent), and `r misinfits` persons according to infit values (representing `r round(misinfits*100/nrow(PersonFitTBL), 2)` percent of all participants).
+
+Item difficulty estimates (and confidence elipses) for high and low latent score groups are displayed visually in `r f.ref("fig_2b.5a")`.
+ 
+```{r, fig.width=10, fig.height=10, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_2b.5a_cap }
+# plot in a pdf
+# pdf( "./GOF-mydata1.pdf", width=10, height=10, paper="special" );
+# plot item difficulty estimates (& confidence elipses) for high and low latent score groups (should be close to the line, elipses small)
+plotGOF(lrres,conf=list(), tlab="number", cex=0.8)
+# dev.off();
+```
+
+Item parameter confidence intervals based on LR test are displayed visually in `r f.ref("fig_2b.6a")`.
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_2b.6a_cap }
+# plot in a pdf
+# pdf( "./LRES-mydata1.pdf", width=10, height=10, paper="special" );
+# plot item parameter confidence intervals based on LR test
+plotDIF(lrres)
+# dev.off();
+```
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+
+# if only some items and/or persons don't fit the model and you've got plenty left, you can exclude them from the analysis and rerun the models above
+# you can either exclude them manually or use the function eRm::stepwiseIt
+# if your rasch model does not fit well and there is not much hope to save it by excluding a few items, you may want to consider other IRT models
+
+# for binary items 
+#         # MODEL 2
+#         # 1-parameter model - unconstrained Rasch (discrimination parameter estimated and equal for all)
+#         # ok if discrimination >0.5 and <2 (Linacre J. Discrimination, guessing and carelessness: estimating IRT parameters with Rasch. 
+#         # Rasch Meas Trans. 2004;18(1):959-960.)
+#         fit2 <- rasch(mydata[,Subscale1])
+#         summary(fit2)
+#               
+#         # MODEL 3
+#         # 2-parameter model (ltm - latent trait model 
+#         # the bit ~ z1 specifies 1 latent z1; max 2 latents possible)
+#         # if IRT.param = FALSE, it reports factor analytical results (intercepts ^ loadings)
+#         fit3 <- ltm(mydata[,Subscale1] ~ z1)
+#         summary(fit3)
+# 
+#         # MODEL 4
+#         # 3-parameter model (tpm - three parameter model) 
+#         # default: type="latent trait" (different discrimination params)
+#         # estimation problems can occur, and can give error messages - in which case more advanced model constraints are necessary (look at ?tpm)
+#         fit4 <- tpm(mydata[,Subscale1])
+#         summary(fit4)
+#         
+#         # comparisons between models can be done as follows (if p sign, more constrained is better)
+#         lavaan::anova(fit2, fit4)
+
+# for ordinal items 
+#           # constrained graded response model (equal discrimination parameters across items)
+#           fit2.mysubscale <- grm(mydata[,Subscale1], constrained = TRUE, Hessian=TRUE)
+#           fit2.mysubscale
+#           summary(fit2.mysubscale)
+#           margins(fit2.mysubscale)
+#           margins(fit2.mysubscale, type="three")
+#           
+#           # unconstrained graded response model
+#           fit3.mysubscale <- grm(mydata[,Subscale1], constrained = FALSE, Hessian=TRUE)
+#           fit3.mysubscale
+#           summary(fit3.mysubscale)
+#           margins(fit3.mysubscale)
+#           margins(fit3.mysubscale, type="three")
+#           
+#           # test between constrained and unconstrained
+#           anova(fit3.mysubscale, fit2.mysubscale)
+
+```
+
+**Note**: the analysis can be repeated for the other subscales.
+
+## Interpretation
+
+for each subscale:
+- Is item fit (infit and outfit) within the acceptable range (mean squares 0.6-1.4 and standardized fit statistics within +/−2.0)?
+- Are global model fit and item-pair and item-triplet residuals?
+- Are items and persons covering the whole range of the latent? (no item saturation or deficiency, items are not too easy or too difficult for the sample)
+- Acceptable person reliability (adequate values >.85) and person separation (>2.5).
+- Do most persons fit the model (<5 percent with mean squares out of the 0.6-1.4 range and standardized fit statistics outside +/−2.0)?
+- Do items show similar difficulty for subgroups of high and low scores? (confidence intervals do not intersect the diagonal)
+
+If some items show misfit, consider excluding and repeat the process.
+
+# Step 3: Factor analysis
+
+Exploratory and confirmatory factor analyses are performed to provide a complementary perspective on the dimensionality of the item set, under various conditions. Unlike item response theory, factor analysis treats items as continuous variables with comparable (normal) distributions; thus, it does not acknowledge differences between items in terms of the probability of response options being endorsed by respondents at different levels of the latent continuum measured (item difficulty/intensity). Therefore, factor analysis can provide different results compared to IRT methods. Results that confirm the structure identified in Step 2 can be considered as enforcing the findings (i.e. results do not depend on the method used); differences in results may require a reconsideration of these assumptions (e.g. FA can also be run treating items as ordinal by using a polychoric correlation matrix). As IRT analyses are less common, FA analyses can also be used to compare results of a new study with analyses reported in previous studies. The following analyses are performed:
+
+* parallel analysis explores the number of factors/components via principal components and principal axis factoring, based on a comparison with simulated/resampled data. It suggests a number of factors/components based on eigenvalues (default is by comparing them with the mean of the simulated/resampled values). The solution is displayed as R console output text, and graphically as a screeplot.
+
+* Very Simple Structure (VSS) analysis determines the optimal number of factors by considering increasing levels of factor complexity (c, i.e. the number of factors on which an item loading may differ from zero, up to a pre-specified value). The fit of each factor solution is compared to a simplified loading matrix, in which all except the c biggest loadings of each item are set to zero. The VSS plot displays the fit results for each ‘complexity’; the optimal solution is that for which complexity one has the highest value, and thus is easier to interpret. The results are also reported as text output.
+
+* Factor analysis with a pre-defined number of factors based on theory examines whether a theory-based solution is plausible. A scatterplot of the location of the items on the resulting dimensions is presented graphically; distinct clusters of items of the same color (indicating loading on the same factor) suggest a plausible solution. A diagram is also presented, indicating which items load on each factor (and the parameter estimates for factor loadings), and the associations between the factors; if the items load on the factors hypothesised and factors are not strongly related, this lends support for the structure hypothesized. 
+
+* Item cluster analysis (ICLUST) is an alternative to factor analysis that examines the similarities between items and explores a bottom-up solution that forms composite scales by grouping items so that alpha and beta coefficients of the resulting scales increase (the default option is applied here, several parametrizations available). The results are visualized in a cluster graph that shows the steps of clustering and the resulting alpha and beta coefficients; if items cluster together as expected by theory, this can be considered as support for the hypothesized structure. Output text provides reliability indicators for the resulting scale(s).
+
+* Hierarchical factor analysis specify the theory-based number of factors but introduce the possibility of another general factor influencing responses to items, either ias a second-order general factor impacting on the hypothesised factors directly (hierarchical solution), or as a separate factor with direct links to items (Schmid Leiman solution). The results are produced graphically (FA diagrams) and as output text.
+
+* Confirmatory factor analysis based on theory reports fit statistics and parameter estimates for a pre-specified model, according to theory. Results are presented in diagram form, and also as output text. Model fit indices above recommended thresholds (Tucker-Lewis index (TLI) and Comparative Fit Index (CFI) >0.95; root mean square error of approximation (RMSEA) <0.06; chi-square P value >.05) and factor loadings in the expected ranges (>.30 or .40 for the hypothesised dimensions) suggest a plausible model.
+
+
+## Results
+
+```{r, fig.width=10, fig.height=5, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_3.1_cap}
+#__________________#
+####   STEP 3   ####
+#__________________#
+# EFA ####
+# set captions
+Fig_3.1_cap <- figure_nums(name="fig_3.1", caption = "FA: Parallel analysis screeplot & Very Simple Structure plot" )
+Fig_3.2_cap <- figure_nums(name="fig_3.2", caption = "FA: 3-factor EFA (principal axis factoring)" )
+Fig_3.3_cap <- figure_nums(name="fig_3.3", caption = "FA: 3-factor EFA diagram (principal axis factoring)" )
+Fig_3.4_cap <- figure_nums(name="fig_3.4", caption = "FA: hierarchical cluster analysis for items (ICLUST)" )
+Fig_3.5_cap <- figure_nums(name="fig_3.5", caption = "FA: 3-factor hierarchical factor analysis (Schmid Leiman solution)" )
+Fig_3.6_cap <- figure_nums(name="fig_3.6", caption = "FA: 3-factor hierarchical factor analysis (hierarchical solution)" )
+Fig_3.7_cap <- figure_nums(name="fig_3.7", caption = "FA: 3-factor confirmatory factor analysis diagram" )
+Fig_3.8_cap <- figure_nums(name="fig_3.8", caption = "FA: network analysis (correlations matrix)" )
+Fig_3.9_cap <- figure_nums(name="fig_3.9", caption = "FA: network analysis (partial correlations matrix)" )
+# factor analysis via parallel analysis
+par( mfrow=c(1,2));
+# consider using tetrachoric correlations for binary items (cor="tet"), and polychoric for ordinal items (cor="poly"); Pearson correlations are specified below (default)
+fa.parallel(mydata #, cor="poly"
+            )
+# very simple structure analysis
+vss(mydata, 5)
+```
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_3.2_cap}
+
+# # default FA - 5 factor, min residual & principal axis
+# fa(mydata,  nfactors=2, fm="minres", n.iter=10)
+# fa(mydata,  nfactors=2, fm="pa")
+# plot the fa solution
+plot(fa(mydata,  nfactors=3, fm="pa"))
+```
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_3.3_cap}
+# plot diagram fa solution
+fa.diagram(fa(mydata,  nfactors=3, fm="pa"))
+# pca (in case you need it, but would not advise - data reduction, but not structural validity test)
+# principal(mydata,3,rotate="varimax")
+```
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_3.4_cap}
+# hierarchical cluster analysis using ICLUST (groups items)
+ summary(iclust(mydata, title="ICLUST using Pearson correlations"))
+# iclust.diagram(iclust(mydata, title="ICLUST using Pearson correlations"))
+```
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_3.5_cap}
+# hierarchical factor solution to find omega coefficient
+omega(mydata, nfactors=3, sl=FALSE)
+```
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_3.6_cap}
+omega(mydata, nfactors=3, sl=TRUE)
+# omega with polychoric matrix
+# mydata.poly <- polychoric(mydata)
+# omega(mydata.poly$rho, nfactors=3,  sl=FALSE)
+```
+
+Confirmatory factor analysis:
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+# CFA ####
+
+# specify the model
+CFA.mydata <- '
+# factor structure
+Subscale1 =~ Item1 + Item2 + Item3 + Item4 + Item5 + Item6 + Item7 + Item8 + Item9 + Item10
+Subscale2 =~ Item11 + Item12 + Item13 + Item14 + Item15 + Item16 + Item17 + Item18 + Item19 + Item20
+Subscale3 =~ Item21 + Item22 + Item23 + Item24 + Item25 + Item26 + Item27 + Item28 + Item29 + Item30
+'
+
+# fit the model
+
+# to use an estimator better suited to ordinal or binary items (WLSMV), use "ordered" specification as here: http://lavaan.ugent.be/tutorial/cat.html)
+# alternatively, consider using estimator = "MLR" (robust maximum likelihood) for ordinal items with e.g. 7-point response scales
+
+fitCFA.mydata <- lavaan::cfa(CFA.mydata, data=mydata)
+# model summary
+summary(fitCFA.mydata, standardized=TRUE, fit.measures = TRUE)
+# coefficients only
+# coef(fitCFA.mydata)
+# CFA diagram from psych package
+# lavaan.diagram(fitCFA.mydata, errors=TRUE)
+```
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_3.7_cap}
+# diagram from semPlot package
+#semPaths(fitCFA.mydata,what="std", label.cex=0.3, edge.label.cex=0.5, sizeLat=5, sizeMan=4, curvePivot = TRUE, rotation=4)
+semPaths(fitCFA.mydata,what="std",layout="circle",edge.label.cex=0.5, curvePivot = TRUE, rotation=3)
+```
+
+## Interpretation
+
+- Does the parallel analysis propose a number of factors consistent with Step 3?
+- Is the VSS fit higher for the solution with the same number of factors as above?
+- Do items load on the expected factors and are the values of factor loadings as expected in the theory-based solution?
+- Do items cluster as expected?
+- Does adding a general factor give a plausible alternative interpretation?
+- Does the theory-based factor model have a good fit with the data?
+
+# Step 4: Classical Test Theory analysis
+
+Several indices of scale reliability are displayed in Table `r t.ref("tab_8")` for each subscale: Cronbach's alpha, Guttman's lambda6, beta, omega (confidence intervals available in the script). Scale properties if item is dropped are reported for each subscale in separate tables (`r t.ref("tab_9")` to `r t.ref("tab_11")`). 
+
+## Results
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE, message=FALSE}
+#__________________#
+####   STEP 4   ####
+#__________________#
+# the psych, CTT and MBESS packages 
+# the psych, CTT and MBESS packages 
+# CTT analyses (the same for binary and ordinal)
+
+                # ^^^^^ please check here limitations of C alpha and alternatives: 
+                # http://link.springer.com/article/10.1007/s11336-008-9101-0
+                # http://link.springer.com/article/10.1007/s11336-008-9102-z
+
+
+Tab_4.1_cap <- table_nums(name="tab_4.1", caption = "CTT: Reliability indices all scales")
+Tab_4.2_cap <- table_nums(name="tab_4.2", caption = "CTT: Subscale 1: Reliability if item dropped")
+Tab_4.3_cap <- table_nums(name="tab_4.3", caption = "CTT: Subscale 2: Reliability if item dropped")
+Tab_4.4_cap <- table_nums(name="tab_4.4", caption = "CTT: Subscale 3: Reliability if item dropped")
+# CTT for subscale 1
+# C-alpha  & CIs; Guttman's lambda 6 (squared multiple correlation)
+# and CTT item properties - reliability if item excluded, item statistics, response frequencies(%)
+Calphamysubscale1 <- psych::alpha(mysubscale1) 
+# beta can be found in the iclust solution
+# iclust(mydata)
+# beta by splitHalf and all guttman indices
+# guttman(mysubscale1)
+# and omega & CIs as per Dunn et al 2014 (http://onlinelibrary.wiley.com/doi/10.1111/bjop.12046/abstract
+# ***** recommended number of bootstraps is 1000, but can be slow, so change if needed *****
+# ***** interval.type="bca" is recommended, but if not working "perc" may give close results
+omegamysubscale1 <- ci.reliability(data=mysubscale1, type="omega", conf.level = 0.95,
+               interval.type="perc", B=100)
+
+# CTT for subscale 2
+# C-alpha  & CIs; Guttman's lambda 6 (squared multiple correlation)
+# and CTT item properties - reliability if item excluded, item statistics, response frequencies(%)
+Calphamysubscale2 <- psych::alpha(mysubscale2) 
+# beta can be found in the iclust solution
+# iclust(mydata)
+# beta by splitHalf and all guttman indices
+# guttman(mysubscale2)
+# and omega & CIs as per Dunn et al 2014 (http://onlinelibrary.wiley.com/doi/10.1111/bjop.12046/abstract
+# ***** recommended number of bootstraps is 1000, but can be slow, so change if needed *****
+# ***** interval.type="bca" is recommended, but if not working "perc" may give close results
+omegamysubscale2 <- ci.reliability(data=mysubscale2, type="omega", conf.level = 0.95,
+               interval.type="perc", B=100)
+
+# CTT for subscale 3
+# C-alpha  & CIs; Guttman's lambda 6 (squared multiple correlation)
+# and CTT item properties - reliability if item excluded, item statistics, response frequencies(%)
+Calphamysubscale3 <- psych::alpha(mysubscale3) 
+# beta can be found in the iclust solution
+# iclust(mydata)
+# beta by splitHalf and all guttman indices
+# guttman(mysubscale3)
+# and omega & CIs as per Dunn et al 2014 (http://onlinelibrary.wiley.com/doi/10.1111/bjop.12046/abstract
+# ***** recommended number of bootstraps is 1000, but can be slow, so change if needed *****
+# ***** interval.type="bca" is recommended, but if not working "perc" may give close results
+omegamysubscale3 <- ci.reliability(data=mysubscale3, type="omega", conf.level = 0.95,
+               interval.type="perc", B=100)
+
+# put them together in a nice table
+Scale = c("Subscale1", "Subscale2", "Subscale3"); 
+Calpha = c(paste(round(Calphamysubscale1$total$std.alpha, 2),
+                 " [", strsplit(capture.output(print(Calphamysubscale1))[9],"[[:space:]]+")[[1]][1], 
+                 "-", strsplit(capture.output(print(Calphamysubscale1))[9],"[[:space:]]+")[[1]][3],"]"),
+           paste(round(Calphamysubscale2$total$std.alpha, 2),
+                 " [", strsplit(capture.output(print(Calphamysubscale2))[9],"[[:space:]]+")[[1]][1], 
+                 "-", strsplit(capture.output(print(Calphamysubscale2))[9],"[[:space:]]+")[[1]][3],"]"),
+           paste(round(Calphamysubscale3$total$std.alpha, 2),
+                 " [", strsplit(capture.output(print(Calphamysubscale3))[9],"[[:space:]]+")[[1]][1], 
+                 "-", strsplit(capture.output(print(Calphamysubscale3))[9],"[[:space:]]+")[[1]][3],"]"));
+G6 = c(round(Calphamysubscale1$total[,"G6(smc)"], 2),
+       round(Calphamysubscale2$total[,"G6(smc)"], 2),
+       round(Calphamysubscale3$total[,"G6(smc)"], 2));
+Beta = c(round(iclust(mydata[,1:24])$beta, 2),
+         round(iclust(mysubscale1)$beta, 2),
+         round(iclust(mysubscale2)$beta, 2));
+Omega = c(paste(round(omegamysubscale1$est, 2),
+                " [",round(omegamysubscale1$ci.lower, 2),
+                "-", round(omegamysubscale1$ci.upper, 2),"]"),
+          paste(round(omegamysubscale2$est, 2),
+                " [",round(omegamysubscale2$ci.lower, 2),
+                "-", round(omegamysubscale2$ci.upper, 2),"]"),
+          paste(round(omegamysubscale3$est, 2),
+                " [",round(omegamysubscale3$ci.lower, 2),
+                "-", round(omegamysubscale3$ci.upper, 2),"]"));
+CTT4subscales <- data.frame( Scale, Calpha, G6, Beta, Omega);
+
+```
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(CTT4subscales, caption = Tab_4.1_cap)
+```
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(Calphamysubscale1$alpha.drop, digits=2, caption = Tab_4.2_cap)
+```
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(Calphamysubscale2$alpha.drop, digits=2, caption = Tab_4.3_cap)
+```
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(Calphamysubscale3$alpha.drop, digits=2, caption = Tab_4.4_cap)
+```
+
+## Interpretation
+
+- Are all reliability indices acceptable?
+- Are any items better dropped?
+
+
+# Step 5: Cluster analysis
+
+A hierarchical clustering method is performed based on distance coefficients (Euclidean, or Jaccard index) with complete linkage. The agglomeration schedule is examined graphically based on a dendrogram. Distinct clusters of respondents are noticed when there are 'long arms' in the last agglomeration steps indicating large difference between clusters of respondents and there is a low number of clusters of comparable sizes.
+If a few distinct groups of respondents are identified, these are characterized in terms of size (percentage respondents) and differences regarding item responses: a radar plot shows the average values for each item per cluster (color-coded polygons). 
+
+An alternative kmeans or kmedoids cluster solution (optimization clustering methods, with the number of clusters specified based on the hierarchical method) is tested and displayed graphically as a 2D plot. Cluster consistency is examined via silhouette plots. Silhouette width (ranging from -1 to 1) is an indicator of respondent similarity with the members of their own group compared with their dissimilarity with the nearest cluster to which they do not belong. Respondents with values closer to 1 clearly belong to their cluster, while values closer to -1 indicate misclassification; an average silhouette width >.5 indicates a cluster solution with reasonable classification, while values <.2 reflect a lack of cluster structure.
+
+An interactive 3D plot of the location of respondents on the first 3 principal components is shown with group membership color-coded (based on the hierarchical clustering solution). 
+(Further tests of group differences regarding item values and socio-demographics can be performed if needed.)
+
+## Results
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+#__________________#
+####   STEP 5   ####
+#__________________#
+# the stats & cluster packages 
+
+Tab_5.1_cap <- figure_nums(name="Tab_5.1", caption = "CA: Agglomeration schedule (hierarchical clustering)")
+
+Fig_5.1_cap <- figure_nums(name="fig_5.1", caption = "CA: Dendrogram cluster analysis (hierarchical clustering)")
+Fig_5.2_cap <- figure_nums(name="fig_5.2", caption = "CA: Radar plot of item means per cluster")
+Fig_5.3_cap <- figure_nums(name="fig_5.3", caption = "CA: 2D cluster plot K-means cluster solution")
+Fig_5.4_cap <- figure_nums(name="fig_5.4", caption = "CA: 3D scatterplot on first 3 principal components")
+
+# perform hierarchical clustering of participants 
+# for ordinal - hierarhical clustering with complete linkage on distance matrix with Euclidean distances (default)
+hclust.mydata <- hclust(dist(mydata), "complete")
+# or for binary - hierarhical clustering with complete linkage on distance matrix for binary data (Jaccard index)
+# hclust.mydata <- hclust(dist(mydata, method="binary"), "complete")
+
+```
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_5.1_cap}
+# plot with cluster splits for 2, 3 and 4 clusters
+#(^^^^^^ look for:
+# gaps in height - indicate bigger differences between groups)
+# few clusters - good solution is a parsimonious solution
+# clusters of comparable sizes - good solution includes well-balanced percentages)
+plot(hclust.mydata, cex=0.6)
+rect.hclust(hclust.mydata, 2)
+rect.hclust(hclust.mydata, 3)
+
+# or plot with ggplot
+# ggdendrogram(hclust.mydata, rotate = TRUE, theme_dendro = FALSE)
+
+# agglomeration schedule - distance coefficients (height) for last 10 steps (the last groupings in the graph, in table format)
+tail(aggl.sch(hclust.mydata), 10L)
+
+```
+
+
+```{r results = 'asis', echo=FALSE}
+knitr::kable(tail(aggl.sch(hclust.mydata), 10L), digits=2, caption = Tab_5.1_cap)
+```
+
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE, message=FALSE}
+# save the cluster membership in the original dataset - for example if the data indicate a 3-cluster solution
+mydata$clusternumber <- cutree(hclust.mydata, 3)
+# percentages of participants in groups
+#length(mydata$clusternumber[mydata$clusternumber==1])*100/length(mydata$clusternumber)
+#length(mydata$clusternumber[mydata$clusternumber==2])*100/length(mydata$clusternumber)
+#length(mydata$clusternumber[mydata$clusternumber==3])*100/length(mydata$clusternumber)
+# compare cluster groups on items
+for( n in myitems)
+{
+  cat( "\n", n, ":" );
+  print( chisq.test(mydata$clusternumber, mydata[,n]) );
+}
+# compare cluster groups on e.g. demographics
+# (***** make sure you add your demographic to the dataset)
+# t.test(clusternumber ~ mydata$GENDER, mydata)
+```
+
+```{r, fig.width=10, fig.height=5, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_5.2_cap}
+# visualize the clusters
+data1 <- mydata %>% 
+  gather(item,score,-clusternumber) %>% 
+  group_by(item) %>% 
+  mutate(rescaledscore=(score-min(score))/(max(score)-min(score)))
+
+data1$clusternumber <- as.factor(data1$clusternumber)
+
+# flat means plot if needed
+# m <- ggplot(data1, aes(y = score, x = item,
+#     fill=clusternumber))
+# m + theme(panel.background = element_rect(fill='white', colour='black'), 
+#           panel.grid.major= element_line(colour='lightgrey'), 
+#           legend.key=element_rect(fill="white"), 
+#           axis.text.x = element_text(angle = 60, hjust = 1))  + 
+#   labs(fill = "Cluster number", colour = "Cluster number") +  
+#   geom_point(stat = "summary", fun.y = "mean", aes(colour=clusternumber) )
+
+# radar plot
+# function
+coord_radar <- function (theta = "x", start = 0, direction = 1) 
+{
+    theta <- match.arg(theta, c("x", "y"))
+    r <- if (theta == "x") 
+        "y"
+    else "x"
+    ggproto("CordRadar", CoordPolar, theta = theta, r = r, start = start, 
+        direction = sign(direction),
+        is_linear = function(coord) TRUE)
+}
+
+# plot
+ggplot(data1, aes(x = item, y = score)) +
+  geom_polygon(stat = "summary", fun.y = "mean", aes(group = clusternumber, color = clusternumber), fill = NA, size = 2, show.legend = FALSE) +
+  geom_line(stat = "summary", fun.y = "mean", aes(group = clusternumber, color = clusternumber), size = 2) +
+  theme(panel.background = element_rect(fill='white', colour='black'), 
+        panel.grid.major= element_line(colour='lightgrey'),
+        legend.key=element_rect(fill="white"),
+        strip.text.x = element_text(size = rel(0.8)),
+        axis.text.x = element_text(size = rel(0.8)),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank()) +
+  xlab("") + ylab("") + labs(fill = "Cluster number", colour = "Cluster number")  +
+  guides(color = guide_legend(ncol=2)) +
+  coord_radar()
+
+```
+
+The resulting clusters have the following percentages of the total sample:
+
+- cluster 1: `r round(length(mydata$clusternumber[mydata$clusternumber==1])*100/length(mydata$clusternumber), 2)`%
+- cluster 2: `r round(length(mydata$clusternumber[mydata$clusternumber==2])*100/length(mydata$clusternumber), 2)`%
+- cluster 3: `r round(length(mydata$clusternumber[mydata$clusternumber==3])*100/length(mydata$clusternumber), 2)`%
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE, message=FALSE}
+# and/or perform 
+
+# for ordinal data: k-means can be used (more commonly used)
+kmmydata <- kmeans(mydata, 3)
+kmdata <- data.frame(mydata[, -ncol(mydata)], K=kmmydata$cluster) #Include the new number of cluster in the data set
+
+# for binary data: k-medoids (more robust than k-means)
+# pammydata <- pam(dist(mydata, method="binary"), 3) # computed from the distance matrix, can be computed from dataset too: pammydata <- pam(mydata, 3)
+
+```
+
+```{r, fig.width=5, fig.height=5, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_5.3_cap}
+# plot the clusters (should be distinct groups)
+clusplot(mydata, kmmydata$cluster, color=TRUE, shade=TRUE, 
+                  labels=1, lines=0)
+
+# or for k-medoids clusters
+# clusplot(pammydata)
+# consider plotting also the silhouette values (good if close to 1, bad if close to 0, more appropriate for the neighbouring cluster if negative value)
+# plot(pammydata)
+# and the average silhouette width for reporting: (indicates reasonable cluster classification if >.5, no cluster structure if <.2)
+# pammydata$silinfo$avg.width
+
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE, message=FALSE}
+# amazing 3d plot
+pcdf <- princomp(mydata[, -ncol(mydata)],cor=T,score=T)
+summary(pcdf) # Compute the validity of each component/dimension
+```
+
+```{r, webgl=TRUE, fig.width=5, fig.height=5, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_5.4_cap}
+plot3d(pcdf$scores, col=rainbow(3)[kmdata$K], main = "Cluster location on first 3 principal components")#Create a 3D plot
+legend3d("topright", legend = paste('Cluster number', c('1', '2', '3')), pch = 15, col = rainbow(3), cex=0.80)
+
+```
+
+## Interpretation
+
+- Can item responses (also/better) be characterized as categories of respondents?
+- if yes, 
+  - what do the groups represent in terms of item content?
+  - how separate are these groups in terms of the variance in item responses?  
+
+# Step 6: Total scores descriptives 
+
+Total scores are computed based on the previous decisions. Descriptive statistics are presented in table format. Distributions are shown graphically as histograms.
+
+## Results
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE, message=FALSE}
+#__________________#
+####   STEP 6   ####
+#__________________#
+
+Tab_6.1_cap <- table_nums(name="tab_6.1", caption = "Descriptive statistics total scores")
+Fig_6.1_cap <- figure_nums(name="fig_6.1", caption = "Histogram total scores for subscales")
+
+# specify which items belong to which scales
+myKeys <- make.keys(nvar=30,list(Subscale1 = c(1:10),
+                                 Subscale2 =c(11:20),
+                                Subscale3 =c(21:30)),
+                    item.labels = colnames(mydata[,1:30]))
+# form several scales, default is average score (totals=FALSE)
+# (***** if you want sum scores, for example for binary items, add totals=TRUE)
+mydata.scores <- scoreItems(myKeys, mydata[,1:30])
+# check the highlights of the results
+mydata.scores
+# check everything about your scores
+print(mydata.scores, short=FALSE)
+# add them to your itemset
+mydata <- cbind(mydata, mydata.scores$scores)
+
+# examine frequencies
+table(mydata$Subscale1, exclude=NULL)
+table(mydata$Subscale2, exclude=NULL)
+table(mydata$Subscale3, exclude=NULL)
+
+# floor and ceiling effects
+sum(mydata$Subscale1==min(mydata$Subscale1))*100/nrow(mydata) # replace with minimum possible value if not present in data
+sum(mydata$Subscale1==max(mydata$Subscale1))*100/nrow(mydata) # replace with maximum possible value if not present in data
+
+# check descriptives
+    # for multiple scales (with psych::describe)
+descrScales <- as.data.frame( round( psych::describe( mydata[,c("Subscale1", "Subscale2", "Subscale3")] ), 2 ))
+```
+
+
+```{r , results = 'asis', echo=FALSE}
+knitr::kable(descrScales[,c(3,4,8,9,10,11,12,13)], caption = Tab_6.1_cap)
+```
+
+
+```{r, fig.width=12, fig.height=4, warning=FALSE, echo=FALSE, message=FALSE, fig.cap=Fig_6.1_cap}
+# do a histogram
+par( mfrow=c(1,3))
+hist(mydata$Subscale1)
+hist(mydata$Subscale2)
+hist(mydata$Subscale3)
+```
+
+
+```{r, include=TRUE, warning=FALSE, echo=FALSE, message=FALSE}
+cor(mydata[, c("Subscale1", "Subscale2", "Subscale3")], method = "spearman")
+```
+
+## Interpretation
+
+- Do total scores have acceptable distributions and summary statistics?
+- Are correlations of total scores as expected?
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE, message=FALSE}
+
+#__________________#
+####     NEXT   ####
+#__________________#
+# ... after the 6 steps
+
+
+# ***** insert your code here for...
+
+### correlations with related measures for convergent validity
+
+### regression model
+
+### test of group differences
+
+### ANOVA
+
+### ... and the rest of your data analysis plan
+
+```
+
